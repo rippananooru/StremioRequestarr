@@ -214,9 +214,9 @@ builder.defineStreamHandler(async ({ type, id }) => {
      */
     if (
       queueItem?.trackedDownloadState ===
-        "importPending" ||
+      "importPending" ||
       queueItem?.trackedDownloadState ===
-        "importing"
+      "importing"
     ) {
       return {
         streams: [
@@ -240,11 +240,11 @@ builder.defineStreamHandler(async ({ type, id }) => {
       const progress =
         queueItem.size > 0
           ? Math.round(
-              ((queueItem.size -
-                queueItem.sizeleft) /
-                queueItem.size) *
-                100
-            )
+            ((queueItem.size -
+              queueItem.sizeleft) /
+              queueItem.size) *
+            100
+          )
           : 0;
 
       return {
@@ -304,9 +304,9 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
     if (
       queueItem?.trackedDownloadState ===
-        "importPending" ||
+      "importPending" ||
       queueItem?.trackedDownloadState ===
-        "importing"
+      "importing"
     ) {
       title = "IMPORTING";
     } else if (
@@ -316,11 +316,11 @@ builder.defineStreamHandler(async ({ type, id }) => {
       const progress =
         queueItem.size > 0
           ? Math.round(
-              ((queueItem.size -
-                queueItem.sizeleft) /
-                queueItem.size) *
-                100
-            )
+            ((queueItem.size -
+              queueItem.sizeleft) /
+              queueItem.size) *
+            100
+          )
           : 0;
 
       title =
@@ -335,13 +335,13 @@ builder.defineStreamHandler(async ({ type, id }) => {
     title,
     ...(movie?.hasFile
       ? {
-          url:
-            `${PUBLIC_BASE_URL}/play/movie/${id}`,
-        }
+        url:
+          `${PUBLIC_BASE_URL}/play/movie/${id}`,
+      }
       : {
-          externalUrl:
-            `${PUBLIC_BASE_URL}/request/movie/${id}`,
-        }),
+        externalUrl:
+          `${PUBLIC_BASE_URL}/request/movie/${id}`,
+      }),
   };
 
   return {
@@ -459,7 +459,18 @@ app.get(
         return;
       }
 
-      const filePath = episodeFile.path;
+      const sonarrPath = episodeFile.path;
+
+      if (!sonarrPath) {
+        throw new Error("Sonarr episode file has no path");
+      }
+
+      if (!sonarrPath.startsWith("/tv/")) {
+        throw new Error(`Unexpected Sonarr TV path: ${sonarrPath}`);
+      }
+
+      const relativePath = sonarrPath.substring("/tv/".length);
+      const filePath = path.resolve("/media/tv", relativePath);
 
       console.log(
         `TV playback: ${series.title} S${String(season).padStart(
