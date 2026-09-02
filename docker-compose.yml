@@ -1,0 +1,11 @@
+services:
+  stremio-requestarr:
+    build: .
+    container_name: stremio-requestarr
+    ports:
+      - "7000:7000"
+    env_file:
+      - .env
+    volumes:
+      - /mnt/USB5TB/Media/Movies:/media/movies:ro
+    restart: unless-stopped
