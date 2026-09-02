@@ -361,17 +361,122 @@ function requestStatusPage(options: {
   initialMessage: string;
 }) {
   return `
+    <!DOCTYPE html>
     <html>
       <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
         <title>StremioRequestarr</title>
+
+        <style>
+          * {
+            box-sizing: border-box;
+          }
+
+          body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            background: #111;
+            color: #fff;
+
+            font-family:
+              -apple-system,
+              BlinkMacSystemFont,
+              "Segoe UI",
+              Roboto,
+              sans-serif;
+
+            text-align: center;
+          }
+
+          .container {
+            width: 90%;
+            max-width: 600px;
+            padding: 40px 30px;
+          }
+
+          .logo {
+            font-size: 18px;
+            font-weight: 600;
+            opacity: 0.6;
+            margin-bottom: 35px;
+          }
+
+          #status {
+            margin: 0 0 20px;
+            font-size: 32px;
+            font-weight: 700;
+          }
+
+          .title {
+            font-size: 20px;
+            font-weight: 500;
+            margin-bottom: 14px;
+          }
+
+          #message {
+            margin: 0;
+            font-size: 16px;
+            opacity: 0.6;
+          }
+
+          .loading {
+            width: 28px;
+            height: 28px;
+            margin: 30px auto 0;
+
+            border: 3px solid rgba(255,255,255,0.15);
+            border-top-color: rgba(255,255,255,0.8);
+            border-radius: 50%;
+
+            animation: spin 1s linear infinite;
+          }
+
+          @keyframes spin {
+            to {
+              transform: rotate(360deg);
+            }
+          }
+
+          @media (max-width: 600px) {
+            #status {
+              font-size: 26px;
+            }
+
+            .title {
+              font-size: 18px;
+            }
+          }
+        </style>
       </head>
 
       <body>
-        <h1 id="status">${options.initialStatus}</h1>
+        <div class="container">
 
-        <p>${options.title}</p>
+          <div class="logo">
+            StremioRequestarr
+          </div>
 
-        <p id="message">${options.initialMessage}</p>
+          <h1 id="status">
+            ${options.initialStatus}
+          </h1>
+
+          <div class="title">
+            ${options.title}
+          </div>
+
+          <p id="message">
+            ${options.initialMessage}
+          </p>
+
+          <div class="loading" id="loading"></div>
+
+        </div>
 
         <script>
           async function updateStatus() {
@@ -390,8 +495,10 @@ function requestStatusPage(options: {
                 data.message;
 
               if (data.done) {
+                document.getElementById("loading").style.display = "none";
                 clearInterval(timer);
               }
+
             } catch (error) {
               console.error("Status update failed:", error);
 
