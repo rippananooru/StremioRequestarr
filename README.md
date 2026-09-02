@@ -1,5 +1,6 @@
 # StremioRequestarr
 
+```
 services:
   stremio-requestarr:
     build:
@@ -20,3 +21,4 @@ services:
       - ${TV}:/media/tv:ro
     restart: unless-stopped
 networks: {}
+```
