@@ -146,7 +146,18 @@ app.get("/play/movie/:imdbId", async (req, res) => {
     const fileSize = stat.size;
     const range = req.headers.range;
 
-    res.setHeader("Content-Type", "video/x-matroska");
+    const ext = path.extname(filePath).toLowerCase();
+
+    const contentType =
+      ext === ".mp4"
+        ? "video/mp4"
+        : ext === ".mkv"
+          ? "video/x-matroska"
+          : ext === ".webm"
+            ? "video/webm"
+            : "application/octet-stream";
+
+    res.setHeader("Content-Type", contentType);
     res.setHeader("Accept-Ranges", "bytes");
 
     /*
