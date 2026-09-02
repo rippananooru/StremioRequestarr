@@ -38,6 +38,32 @@ declare module "stremio-addon-sdk" {
         }>;
       }>
     ): AddonBuilder;
+
+    defineCatalogHandler(
+      handler: (args: { type: string; id: string }) => Promise<{
+        metas: Array<{
+          id: string;
+          type: string;
+          name: string;
+        }>;
+      }>
+    ): AddonBuilder;
+
+    defineMetaHandler(
+      handler: (args: { type: string; id: string }) => Promise<{
+        meta: {
+          id: string;
+          type: string;
+          name: string;
+          videos?: Array<{
+            id: string;
+            title: string;
+            season: number;
+            number: number;
+          }>;
+        } | null;
+      }>
+    ): AddonBuilder;
   }
 
   const addonBuilder: {
