@@ -17,8 +17,9 @@ services:
       - SONARR_QUALITY_PROFILE_ID=${SONARR_QUALITY_PROFILE_ID}
       - BASE_URL=${BASE_URL}
     volumes:
-      - ${MOVIE}:/media/movies:ro
-      - ${TV}:/media/tv:ro
+      - ${MOVIE}:/media/Movies:ro
+      - ${TV}:/media/Shows:ro
     restart: unless-stopped
 networks: {}
+
 ```
