@@ -98,12 +98,22 @@ export async function addMovieToRadarr(imdbId: string): Promise<RadarrMovie> {
 
 export interface RadarrQueueItem {
   movieId: number;
+  downloadId?: string;
+  protocol?: string;
+  downloadClient?: string;
   size: number;
   sizeleft: number;
   status: string;
   trackedDownloadState?: string;
   title: string;
   timeleft?: string;
+}
+
+export interface RadarrHistoryItem {
+  movieId?: number;
+  eventType?: string;
+  downloadId?: string;
+  date?: string;
 }
 
 export async function getRadarrQueueForMovie(
@@ -117,7 +127,7 @@ export async function getRadarrQueueForMovie(
   }
 
   const response = await fetch(
-    `${baseUrl}/api/v3/queue?page=1&pageSize=100`,
+    `${baseUrl}/api/v3/queue?page=1&pageSize=1000`,
     {
       headers: {
         "X-Api-Key": apiKey,
@@ -137,5 +147,50 @@ export async function getRadarrQueueForMovie(
 
   return (
     queue.records.find((item) => item.movieId === movieId) ?? null
+  );
+}
+
+export async function getRadarrDownloadIdForMovie(
+  movieId: number
+): Promise<string | null> {
+  const queueItem = await getRadarrQueueForMovie(movieId);
+
+  if (queueItem?.downloadId) {
+    return queueItem.downloadId;
+  }
+
+  const baseUrl = process.env.RADARR_URL;
+  const apiKey = process.env.RADARR_API_KEY;
+
+  if (!baseUrl || !apiKey) {
+    throw new Error("Radarr configuration is missing");
+  }
+
+  const response = await fetch(
+    `${baseUrl}/api/v3/history?movieId=${movieId}&page=1&pageSize=1000&sortDirection=descending&sortKey=date`,
+    {
+      headers: {
+        "X-Api-Key": apiKey,
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Radarr history error: ${response.status} ${response.statusText}`
+    );
+  }
+
+  const history = (await response.json()) as {
+    records: RadarrHistoryItem[];
+  };
+
+  return (
+    history.records.find(
+      (item) =>
+        item.eventType === "grabbed" &&
+        typeof item.downloadId === "string" &&
+        item.downloadId.length > 0
+    )?.downloadId ?? null
   );
 }

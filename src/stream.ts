@@ -7,255 +7,642 @@ import {
     getSonarrSeriesByImdbId,
     getSonarrEpisodes,
     getSonarrQueueForSeries,
-    getSonarrEpisodeFile,
 } from "./sonarr.js";
 
-import {
-    AddonBuilder,
-} from "stremio-addon-sdk";
-
 const PUBLIC_BASE_URL =
-    process.env.BASE_URL || "http://127.0.0.1:7000";
+    process.env.BASE_URL ||
+    "http://127.0.0.1:7000";
+
+/*
+ * IMPORTANT
+ *
+ * This stream handler is READ-ONLY.
+ *
+ * It never calls:
+ *
+ *   addMovieToRadarr()
+ *   addSeriesToSonarr()
+ *
+ * Requests are performed by request.ts.
+ */
+
+function buildWidgetUrl(
+    params: Record<string, string>
+): string {
+    const query =
+        new URLSearchParams(params);
+
+    return `${PUBLIC_BASE_URL}/widget/player?${query.toString()}`;
+}
+
+function getWidget(
+    title: string,
+    status: string,
+    progress = 0,
+    requestUrl?: string
+) {
+    const params: Record<string, string> = {
+        title,
+        status,
+        progress: String(progress),
+    };
+
+    if (requestUrl) {
+        params.requestUrl =
+            requestUrl;
+    }
+
+    return {
+        widgetPlayer:
+            buildWidgetUrl(params),
+
+        widgetPlayerStates: [
+            "loading",
+            "buffering",
+        ],
+    };
+}
+
+function getRequestUrl(
+    type: "movie" | "series",
+    imdbId: string,
+    season?: number,
+    episode?: number
+): string {
+    if (type === "movie") {
+        return `${PUBLIC_BASE_URL}/request/movie/${encodeURIComponent(
+            imdbId
+        )}`;
+    }
+
+    return `${PUBLIC_BASE_URL}/request/tv/${encodeURIComponent(
+        imdbId
+    )}/${season}/${episode}`;
+}
+
+/*
+ * This must be a real video URL because the Stremio SDK
+ * requires a stream target for a selectable stream.
+ *
+ * playback.ts will provide a tiny placeholder video.
+ */
+function getPlaceholderUrl(): string {
+    return `${PUBLIC_BASE_URL}/playback-placeholder`;
+}
+
+function getMovieQuality(
+    movie: Awaited<
+        ReturnType<
+            typeof getRadarrMovieByImdbId
+        >
+    >
+): string {
+    return (
+        movie?.movieFile
+            ?.quality
+            ?.quality
+            ?.name ??
+        "Unknown"
+    );
+}
+
+function getQueueProgress(
+    item: {
+        size: number;
+        sizeleft: number;
+    }
+): number {
+    if (
+        item.size > 0 &&
+        typeof item.sizeleft === "number"
+    ) {
+        return Math.max(
+            0,
+            Math.min(
+                1,
+                1 -
+                item.sizeleft /
+                item.size
+            )
+        );
+    }
+
+    return 0;
+}
+
+function getQueueStatus(
+    item: {
+        status: string;
+        trackedDownloadState?: string;
+    }
+): string {
+    const status =
+        item.status?.toLowerCase() ?? "";
+
+    const tracked =
+        item.trackedDownloadState
+            ?.toLowerCase() ?? "";
+
+    if (
+        status.includes("import") ||
+        status.includes("move") ||
+        status.includes("copy") ||
+        tracked.includes("import")
+    ) {
+        return "IMPORTING";
+    }
+
+    if (
+        status.includes("download")
+    ) {
+        return "DOWNLOADING";
+    }
+
+    return "QUEUED";
+}
 
 export function registerStreamHandler(
-    builder: AddonBuilder
+    builder: any
 ) {
-
-    builder.defineStreamHandler(async ({ type, id }) => {
-        console.log(`Stream request: ${type} ${id}`);
-
-        /*
-         * ============================================================
-         * TV / SERIES
-         * ============================================================
-         */
-        if (type === "series") {
-            const parts = id.split(":");
-
-            if (parts.length !== 3) {
-                return {
-                    streams: [],
-                };
-            }
-
-            const [imdbId, seasonText, episodeText] = parts;
-
-            const season = Number(seasonText);
-            const episodeNumber = Number(episodeText);
-
-            const series =
-                await getSonarrSeriesByImdbId(imdbId);
-
-            /*
-             * Series is not in Sonarr yet.
-             */
-            if (!series) {
-                return {
-                    streams: [
-                        {
-                            name: "StremioRequestarr",
-                            title: "NOT REQUESTED",
-                            externalUrl:
-                                `${PUBLIC_BASE_URL}/request/tv/${imdbId}/${season}/${episodeNumber}`,
-                        },
-                    ],
-                };
-            }
-
-            const episodes =
-                await getSonarrEpisodes(series.id);
-
-            const episode = episodes.find(
-                (item) =>
-                    item.seasonNumber === season &&
-                    item.episodeNumber === episodeNumber
+    builder.defineStreamHandler(
+        async ({
+            type,
+            id,
+        }: {
+            type: string;
+            id: string;
+        }) => {
+            console.log(
+                `Stream request: ${type} ${id}`
             );
 
-            if (!episode) {
-                return {
-                    streams: [],
-                };
-            }
-
             /*
-             * Episode is available.
+             * ============================================================
+             * SERIES
+             * ============================================================
              */
-            if (episode.hasFile && episode.episodeFileId) {
-                const episodeFile =
-                    await getSonarrEpisodeFile(
-                        episode.episodeFileId
+
+            if (type === "series") {
+                const parts =
+                    id.split(":");
+
+                const imdbId =
+                    parts[0];
+
+                const season =
+                    Number(parts[1]);
+
+                const episode =
+                    Number(parts[2]);
+
+                if (
+                    !imdbId ||
+                    !Number.isInteger(
+                        season
+                    ) ||
+                    season < 0 ||
+                    !Number.isInteger(
+                        episode
+                    ) ||
+                    episode <= 0
+                ) {
+                    return {
+                        streams: [],
+                    };
+                }
+
+                /*
+                 * Check Sonarr.
+                 */
+
+                const series =
+                    await getSonarrSeriesByImdbId(
+                        imdbId
                     );
 
-                const quality =
-                    episodeFile.quality?.quality?.name ?? "";
+                /*
+                 * --------------------------------------------------------
+                 * SERIES NOT IN SONARR
+                 * --------------------------------------------------------
+                 */
 
-                let title = "AVAILABLE";
+                if (!series) {
+                    console.log(
+                        `Series unavailable: ${imdbId}`
+                    );
 
-                if (quality.includes("2160")) {
-                    title = "AVAILABLE • 2160p";
-                } else if (quality.includes("1080")) {
-                    title = "AVAILABLE • 1080p";
-                } else if (quality.includes("720")) {
-                    title = "AVAILABLE • 720p";
+                    return {
+                        streams: [
+                            {
+                                name:
+                                    "StremioRequestarr",
+
+                                title:
+                                    "NOT AVAILABLE",
+
+                                url:
+                                    getPlaceholderUrl(),
+
+                                ...getWidget(
+                                    imdbId,
+                                    "NOT AVAILABLE",
+                                    0,
+                                    getRequestUrl(
+                                        "series",
+                                        imdbId,
+                                        season,
+                                        episode
+                                    )
+                                ),
+                            },
+                        ],
+                    };
                 }
 
-                return {
-                    streams: [
-                        {
-                            name: "StremioRequestarr",
-                            title,
-                            url:
-                                `${PUBLIC_BASE_URL}/play/tv/${imdbId}/${season}/${episodeNumber}`,
-                        },
-                    ],
-                };
-            }
+                /*
+                 * Get episodes.
+                 */
 
-            const queueItems =
-                await getSonarrQueueForSeries(series.id);
+                const episodes =
+                    await getSonarrEpisodes(
+                        series.id
+                    );
 
-            const queueItem = queueItems.find(
-                (item) =>
-                    item.episodeId === episode.id
-            );
+                const episodeData =
+                    episodes.find(
+                        (item) =>
+                            item.seasonNumber ===
+                            season &&
+                            item.episodeNumber ===
+                            episode
+                    );
 
-            /*
-             * Episode is importing.
-             */
-            if (
-                queueItem?.trackedDownloadState ===
-                "importPending" ||
-                queueItem?.trackedDownloadState ===
-                "importing"
-            ) {
-                return {
-                    streams: [
-                        {
-                            name: "StremioRequestarr",
-                            title: "IMPORTING",
-                            externalUrl:
-                                `${PUBLIC_BASE_URL}/request/tv/${imdbId}/${season}/${episodeNumber}`,
-                        },
-                    ],
-                };
-            }
+                /*
+                 * --------------------------------------------------------
+                 * EPISODE NOT FOUND
+                 * --------------------------------------------------------
+                 */
 
-            /*
-             * Episode is downloading.
-             */
-            if (
-                queueItem?.trackedDownloadState ===
-                "downloading"
-            ) {
+                if (!episodeData) {
+                    console.log(
+                        `Episode unavailable: ${imdbId}:${season}:${episode}`
+                    );
+
+                    return {
+                        streams: [
+                            {
+                                name:
+                                    "StremioRequestarr",
+
+                                title:
+                                    "NOT AVAILABLE",
+
+                                url:
+                                    getPlaceholderUrl(),
+
+                                ...getWidget(
+                                    imdbId,
+                                    "NOT AVAILABLE",
+                                    0,
+                                    getRequestUrl(
+                                        "series",
+                                        imdbId,
+                                        season,
+                                        episode
+                                    )
+                                ),
+                            },
+                        ],
+                    };
+                }
+
+                /*
+                 * --------------------------------------------------------
+                 * EPISODE AVAILABLE
+                 * --------------------------------------------------------
+                 */
+
+                if (
+                    episodeData.hasFile &&
+                    episodeData.episodeFileId
+                ) {
+                    const playbackUrl =
+                        `${PUBLIC_BASE_URL}/play/tv/${encodeURIComponent(
+                            imdbId
+                        )}/${season}/${episode}`;
+
+                    const quality =
+                        episodeData
+                            .episodeFile
+                            ?.quality
+                            ?.quality
+                            ?.name ??
+                        "Unknown";
+
+                    return {
+                        streams: [
+                            {
+                                name:
+                                    "StremioRequestarr",
+
+                                title:
+                                    `AVAILABLE • ${quality}`,
+
+                                url:
+                                    playbackUrl,
+
+                                ...getWidget(
+                                    imdbId,
+                                    `AVAILABLE • ${quality}`,
+                                    1
+                                ),
+                            },
+                        ],
+                    };
+                }
+
+                /*
+                 * Check queue.
+                 */
+
+                const queue =
+                    await getSonarrQueueForSeries(
+                        series.id
+                    );
+
+                const queueItem =
+                    queue.find(
+                        (item) =>
+                            item.episodeId ===
+                            episodeData.id
+                    );
+
+                /*
+                 * --------------------------------------------------------
+                 * NOT QUEUED
+                 * --------------------------------------------------------
+                 */
+
+                if (!queueItem) {
+                    console.log(
+                        `Episode not queued: ${imdbId}:${season}:${episode}`
+                    );
+
+                    return {
+                        streams: [
+                            {
+                                name:
+                                    "StremioRequestarr",
+
+                                title:
+                                    "NOT AVAILABLE",
+
+                                url:
+                                    getPlaceholderUrl(),
+
+                                ...getWidget(
+                                    imdbId,
+                                    "NOT AVAILABLE",
+                                    0,
+                                    getRequestUrl(
+                                        "series",
+                                        imdbId,
+                                        season,
+                                        episode
+                                    )
+                                ),
+                            },
+                        ],
+                    };
+                }
+
+                /*
+                 * --------------------------------------------------------
+                 * QUEUED / DOWNLOADING / IMPORTING
+                 * --------------------------------------------------------
+                 */
+
                 const progress =
-                    queueItem.size > 0
-                        ? Math.round(
-                            ((queueItem.size -
-                                queueItem.sizeleft) /
-                                queueItem.size) *
-                            100
-                        )
-                        : 0;
+                    getQueueProgress(
+                        queueItem
+                    );
+
+                const status =
+                    getQueueStatus(
+                        queueItem
+                    );
 
                 return {
                     streams: [
                         {
-                            name: "StremioRequestarr",
+                            name:
+                                "StremioRequestarr",
+
                             title:
-                                `DOWNLOADING • ${progress}%`,
-                            externalUrl:
-                                `${PUBLIC_BASE_URL}/request/tv/${imdbId}/${season}/${episodeNumber}`,
+                                `${status} • ${Math.round(
+                                    progress * 100
+                                )}%`,
+
+                            url:
+                                getPlaceholderUrl(),
+
+                            ...getWidget(
+                                imdbId,
+                                status,
+                                progress
+                            ),
                         },
                     ],
                 };
             }
 
             /*
-             * Episode is queued.
+             * ============================================================
+             * MOVIE
+             * ============================================================
              */
+
+            if (type === "movie") {
+                const imdbId =
+                    id;
+
+                /*
+                 * Check Radarr first.
+                 */
+
+                const movie =
+                    await getRadarrMovieByImdbId(
+                        imdbId
+                    );
+
+                /*
+                 * --------------------------------------------------------
+                 * MOVIE NOT IN RADARR
+                 * --------------------------------------------------------
+                 */
+
+                if (!movie) {
+                    console.log(
+                        `Movie unavailable: ${imdbId}`
+                    );
+
+                    return {
+                        streams: [
+                            {
+                                name:
+                                    "StremioRequestarr",
+
+                                title:
+                                    "NOT AVAILABLE",
+
+                                url:
+                                    getPlaceholderUrl(),
+
+                                ...getWidget(
+                                    imdbId,
+                                    "NOT AVAILABLE",
+                                    0,
+                                    getRequestUrl(
+                                        "movie",
+                                        imdbId
+                                    )
+                                ),
+                            },
+                        ],
+                    };
+                }
+
+                /*
+                 * --------------------------------------------------------
+                 * MOVIE AVAILABLE
+                 * --------------------------------------------------------
+                 */
+
+                if (
+                    movie.hasFile &&
+                    movie.movieFile?.path
+                ) {
+                    const playbackUrl =
+                        `${PUBLIC_BASE_URL}/play/movie/${encodeURIComponent(
+                            imdbId
+                        )}`;
+
+                    const quality =
+                        getMovieQuality(
+                            movie
+                        );
+
+                    return {
+                        streams: [
+                            {
+                                name:
+                                    "StremioRequestarr",
+
+                                title:
+                                    `AVAILABLE • ${quality}`,
+
+                                url:
+                                    playbackUrl,
+
+                                ...getWidget(
+                                    imdbId,
+                                    `AVAILABLE • ${quality}`,
+                                    1
+                                ),
+                            },
+                        ],
+                    };
+                }
+
+                /*
+                 * Check Radarr queue.
+                 */
+
+                const queueItem =
+                    await getRadarrQueueForMovie(
+                        movie.id
+                    );
+
+                /*
+                 * --------------------------------------------------------
+                 * MOVIE NOT QUEUED
+                 * --------------------------------------------------------
+                 */
+
+                if (!queueItem) {
+                    console.log(
+                        `Movie not queued: ${imdbId}`
+                    );
+
+                    return {
+                        streams: [
+                            {
+                                name:
+                                    "StremioRequestarr",
+
+                                title:
+                                    "NOT AVAILABLE",
+
+                                url:
+                                    getPlaceholderUrl(),
+
+                                ...getWidget(
+                                    imdbId,
+                                    "NOT AVAILABLE",
+                                    0,
+                                    getRequestUrl(
+                                        "movie",
+                                        imdbId
+                                    )
+                                ),
+                            },
+                        ],
+                    };
+                }
+
+                /*
+                 * --------------------------------------------------------
+                 * MOVIE QUEUED
+                 * --------------------------------------------------------
+                 */
+
+                const progress =
+                    getQueueProgress(
+                        queueItem
+                    );
+
+                const status =
+                    getQueueStatus(
+                        queueItem
+                    );
+
+                return {
+                    streams: [
+                        {
+                            name:
+                                "StremioRequestarr",
+
+                            title:
+                                `${status} • ${Math.round(
+                                    progress * 100
+                                )}%`,
+
+                            url:
+                                getPlaceholderUrl(),
+
+                            ...getWidget(
+                                imdbId,
+                                status,
+                                progress
+                            ),
+                        },
+                    ],
+                };
+            }
+
             return {
-                streams: [
-                    {
-                        name: "StremioRequestarr",
-                        title: "QUEUED",
-                        externalUrl:
-                            `${PUBLIC_BASE_URL}/request/tv/${imdbId}/${season}/${episodeNumber}`,
-                    },
-                ],
+                streams: [],
             };
         }
-
-        /*
-         * ============================================================
-         * MOVIE
-         * ============================================================
-         */
-        const movie =
-            await getRadarrMovieByImdbId(id);
-
-        let title = "NOT REQUESTED";
-
-        if (movie?.hasFile) {
-            const quality =
-                movie.movieFile?.quality?.quality?.name ?? "";
-
-            if (quality.includes("2160")) {
-                title = "AVAILABLE • 2160p";
-            } else if (quality.includes("1080")) {
-                title = "AVAILABLE • 1080p";
-            } else if (quality.includes("720")) {
-                title = "AVAILABLE • 720p";
-            } else {
-                title = "AVAILABLE";
-            }
-        } else if (movie) {
-            const queueItem =
-                await getRadarrQueueForMovie(movie.id);
-
-            if (
-                queueItem?.trackedDownloadState ===
-                "importPending" ||
-                queueItem?.trackedDownloadState ===
-                "importing"
-            ) {
-                title = "IMPORTING";
-            } else if (
-                queueItem?.trackedDownloadState ===
-                "downloading"
-            ) {
-                const progress =
-                    queueItem.size > 0
-                        ? Math.round(
-                            ((queueItem.size -
-                                queueItem.sizeleft) /
-                                queueItem.size) *
-                            100
-                        )
-                        : 0;
-
-                title =
-                    `DOWNLOADING • ${progress}%`;
-            } else if (movie.monitored) {
-                title = "QUEUED";
-            }
-        }
-
-        const stream = {
-            name: "StremioRequestarr",
-            title,
-            ...(movie?.hasFile
-                ? {
-                    url:
-                        `${PUBLIC_BASE_URL}/play/movie/${id}`,
-                }
-                : {
-                    externalUrl:
-                        `${PUBLIC_BASE_URL}/request/movie/${id}`,
-                }),
-        };
-
-        return {
-            streams: [stream],
-        };
-    });
+    );
 }

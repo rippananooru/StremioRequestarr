@@ -1,240 +1,309 @@
 import express from "express";
-import { statusPage } from "./statusPage.js";
 
 import {
-    getRadarrMovieByImdbId,
     addMovieToRadarr,
+    getRadarrMovieByImdbId,
 } from "./radarr.js";
 
 import {
-    getSonarrSeriesByImdbId,
-    getSonarrEpisodes,
     addSeriesToSonarr,
+    getSonarrSeriesByImdbId,
 } from "./sonarr.js";
 
+function htmlEscape(
+    value: string
+): string {
+    return value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+}
 
-export function registerRequestRoutes(app: express.Application) {
+function renderPage(
+    title: string,
+    message: string,
+    success = false
+): string {
+    return `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+    <title>StremioRequestarr</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #101114;
+            color: #ffffff;
+            font-family:
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                sans-serif;
+        }
+
+        .card {
+            width: min(520px, calc(100% - 40px));
+            padding: 36px;
+            border-radius: 18px;
+            background: #191b20;
+            text-align: center;
+            box-shadow:
+                0 20px 60px rgba(0, 0, 0, 0.45);
+        }
+
+        .icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        h1 {
+            margin: 0 0 12px;
+            font-size: 24px;
+        }
+
+        p {
+            margin: 8px 0;
+            color: #b8bac2;
+            line-height: 1.5;
+        }
+
+        .success {
+            color: #8ee28e;
+        }
+
+        .error {
+            color: #ff8f8f;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <div class="icon">
+            ${success ? "✓" : "⏳"}
+        </div>
+
+        <h1>
+            ${htmlEscape(title)}
+        </h1>
+
+        <p class="${success ? "success" : ""}">
+            ${htmlEscape(message)}
+        </p>
+    </div>
+</body>
+</html>`;
+}
+
+export function registerRequestRoutes(
+    app: express.Application
+) {
     /*
-     * ============================================================
-     * REQUEST — MOVIE
-     * ============================================================
+     * MOVIE REQUEST
+     *
+     * This endpoint is intentionally separate from
+     * the stream handler.
+     *
+     * It is only reached when Stremio actually opens
+     * the selected externalUrl.
      */
     app.get(
         "/request/movie/:imdbId",
         async (req, res) => {
-            const imdbId = req.params.imdbId;
+            const imdbId =
+                req.params.imdbId;
+
+            if (!imdbId) {
+                res
+                    .status(400)
+                    .send(
+                        renderPage(
+                            "Invalid movie",
+                            "No IMDb ID was provided."
+                        )
+                    );
+
+                return;
+            }
 
             try {
-                const existingMovie =
-                    await getRadarrMovieByImdbId(imdbId);
-
                 /*
-                 * Movie already exists in Radarr.
+                 * Check again before adding.
+                 *
+                 * This prevents duplicate requests if
+                 * the movie was added between the stream
+                 * lookup and the actual click.
                  */
-                if (existingMovie) {
-                    /*
-                     * Already available.
-                     */
-                    if (existingMovie.hasFile) {
-                        const quality =
-                            existingMovie.movieFile?.quality?.quality?.name ??
-                            "";
+                const existing =
+                    await getRadarrMovieByImdbId(
+                        imdbId
+                    );
 
-                        let qualityText = "AVAILABLE";
-
-                        if (quality.includes("2160")) {
-                            qualityText = "AVAILABLE • 2160p";
-                        } else if (quality.includes("1080")) {
-                            qualityText = "AVAILABLE • 1080p";
-                        } else if (quality.includes("720")) {
-                            qualityText = "AVAILABLE • 720p";
-                        }
-
-                        res.send(
-                            statusPage({
-                                title: existingMovie.title,
-                                statusUrl:
-                                    `/status/movie/${imdbId}`,
-                                initialStatus: qualityText,
-                                initialMessage:
-                                    "Download complete.",
-                            })
-                        );
-
-                        return;
-                    }
-
-                    /*
-                     * Movie exists but is not available yet.
-                     */
+                if (existing) {
                     res.send(
-                        statusPage({
-                            title: existingMovie.title,
-                            statusUrl:
-                                `/status/movie/${imdbId}`,
-                            initialStatus: "CHECKING...",
-                            initialMessage:
-                                "Checking Radarr status...",
-                        })
+                        renderPage(
+                            existing.title,
+                            "This movie is already in Radarr."
+                        )
                     );
 
                     return;
                 }
 
-                /*
-                 * Movie does not exist in Radarr.
-                 *
-                 * Add it and start the search.
-                 */
-                const movie =
-                    await addMovieToRadarr(imdbId);
+                console.log(
+                    `PLAY REQUEST -> Radarr movie ${imdbId}`
+                );
+
+                const added =
+                    await addMovieToRadarr(
+                        imdbId
+                    );
+
+                console.log(
+                    `Movie requested from playback: ${added.title}`
+                );
 
                 res.send(
-                    statusPage({
-                        title: movie.title,
-                        statusUrl:
-                            `/status/movie/${imdbId}`,
-                        initialStatus: "QUEUED",
-                        initialMessage:
-                            "Added to Radarr and search started.",
-                    })
+                    renderPage(
+                        added.title,
+                        "Requested from Radarr. Download has started or is queued.",
+                        true
+                    )
                 );
             } catch (error) {
                 console.error(
-                    "Request failed:",
+                    "Movie request failed:",
                     error
                 );
 
-                res.status(500).send(`
-          <html>
-            <body>
-              <h1>ERROR</h1>
-              <p>Failed to request movie.</p>
-            </body>
-          </html>
-        `);
+                res
+                    .status(500)
+                    .send(
+                        renderPage(
+                            "Request failed",
+                            error instanceof Error
+                                ? error.message
+                                : "Unable to request movie.",
+                            false
+                        )
+                    );
             }
         }
     );
 
     /*
-     * ============================================================
-     * REQUEST — TV
-     * ============================================================
+     * TV REQUEST
      */
     app.get(
         "/request/tv/:imdbId/:season/:episode",
         async (req, res) => {
-            const imdbId = req.params.imdbId;
-            const season = Number(req.params.season);
-            const episodeNumber =
-                Number(req.params.episode);
+            const imdbId =
+                req.params.imdbId;
+
+            const season =
+                Number(
+                    req.params.season
+                );
+
+            const episode =
+                Number(
+                    req.params.episode
+                );
+
+            if (
+                !imdbId ||
+                !Number.isInteger(season) ||
+                season < 0 ||
+                !Number.isInteger(episode) ||
+                episode <= 0
+            ) {
+                res
+                    .status(400)
+                    .send(
+                        renderPage(
+                            "Invalid episode",
+                            "The series, season, or episode is invalid."
+                        )
+                    );
+
+                return;
+            }
 
             try {
-                const existingSeries =
-                    await getSonarrSeriesByImdbId(imdbId);
-
                 /*
-                 * Series already exists in Sonarr.
+                 * Check whether the series already exists.
                  */
-                if (existingSeries) {
-                    const episodes =
-                        await getSonarrEpisodes(
-                            existingSeries.id
-                        );
-
-                    const episode = episodes.find(
-                        (item) =>
-                            item.seasonNumber === season &&
-                            item.episodeNumber === episodeNumber
+                const existing =
+                    await getSonarrSeriesByImdbId(
+                        imdbId
                     );
 
-                    /*
-                     * Episode already available.
-                     */
-                    if (episode?.hasFile) {
-                        res.send(
-                            statusPage({
-                                title:
-                                    `${existingSeries.title} • S${String(
-                                        season
-                                    ).padStart(
-                                        2,
-                                        "0"
-                                    )}E${String(
-                                        episodeNumber
-                                    ).padStart(
-                                        2,
-                                        "0"
-                                    )}`,
-                                statusUrl:
-                                    `/status/tv/${imdbId}/${season}/${episodeNumber}`,
-                                initialStatus: "AVAILABLE",
-                                initialMessage:
-                                    "Episode available.",
-                            })
-                        );
-
-                        return;
-                    }
-
-                    /*
-                     * Series exists but episode is not
-                     * available yet.
-                     */
+                if (existing) {
                     res.send(
-                        statusPage({
-                            title:
-                                `${existingSeries.title} • S${String(
-                                    season
-                                ).padStart(
-                                    2,
-                                    "0"
-                                )}E${String(
-                                    episodeNumber
-                                ).padStart(
-                                    2,
-                                    "0"
-                                )}`,
-                            statusUrl:
-                                `/status/tv/${imdbId}/${season}/${episodeNumber}`,
-                            initialStatus: "CHECKING...",
-                            initialMessage:
-                                "Checking Sonarr status...",
-                        })
-                    );
-
-                    return;
-                }
-
-                /*
-                 * Series does not exist in Sonarr.
-                 *
-                 * Add the series and start the search.
-                 */
-                const series =
-                    await addSeriesToSonarr(imdbId);
-
-                res.send(
-                    statusPage({
-                        title:
-                            `${series.title} • S${String(
+                        renderPage(
+                            existing.title,
+                            `The series is already in Sonarr. S${String(
                                 season
                             ).padStart(
                                 2,
                                 "0"
                             )}E${String(
-                                episodeNumber
+                                episode
                             ).padStart(
                                 2,
                                 "0"
-                            )}`,
-                        statusUrl:
-                            `/status/tv/${imdbId}/${season}/${episodeNumber}`,
-                        initialStatus: "QUEUED",
-                        initialMessage:
-                            "Added to Sonarr and search started.",
-                    })
+                            )} is being handled by Sonarr.`
+                        )
+                    );
+
+                    return;
+                }
+
+                console.log(
+                    `PLAY REQUEST -> Sonarr series ${imdbId}`
+                );
+
+                const added =
+                    await addSeriesToSonarr(
+                        imdbId
+                    );
+
+                console.log(
+                    `Series requested from playback: ${added.title}`
+                );
+
+                res.send(
+                    renderPage(
+                        added.title,
+                        `Requested from Sonarr. S${String(
+                            season
+                        ).padStart(
+                            2,
+                            "0"
+                        )}E${String(
+                            episode
+                        ).padStart(
+                            2,
+                            "0"
+                        )} will be handled by Sonarr.`,
+                        true
+                    )
                 );
             } catch (error) {
                 console.error(
@@ -242,14 +311,17 @@ export function registerRequestRoutes(app: express.Application) {
                     error
                 );
 
-                res.status(500).send(`
-          <html>
-            <body>
-              <h1>ERROR</h1>
-              <p>Failed to request episode.</p>
-            </body>
-          </html>
-        `);
+                res
+                    .status(500)
+                    .send(
+                        renderPage(
+                            "Request failed",
+                            error instanceof Error
+                                ? error.message
+                                : "Unable to request series.",
+                            false
+                        )
+                    );
             }
         }
     );

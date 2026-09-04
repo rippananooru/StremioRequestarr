@@ -1,3 +1,5 @@
+import { isAnime } from "./metadata.js";
+
 export interface SonarrSeries {
     id: number;
     title: string;
@@ -5,6 +7,7 @@ export interface SonarrSeries {
     tvdbId?: number;
     path: string;
     monitored: boolean;
+    seriesType?: string;
 }
 
 export interface SonarrEpisode {
@@ -42,6 +45,9 @@ export interface SonarrEpisodeFile {
 export interface SonarrQueueItem {
     seriesId?: number;
     episodeId?: number;
+    downloadId?: string;
+    protocol?: string;
+    downloadClient?: string;
     size: number;
     sizeleft: number;
     status: string;
@@ -51,11 +57,11 @@ export interface SonarrQueueItem {
 }
 
 export interface SonarrRootFolder {
-  path: string;
+    path: string;
 }
 
 export interface SonarrQualityProfile {
-  id: number;
+    id: number;
 }
 
 function getConfig() {
@@ -67,7 +73,7 @@ function getConfig() {
     }
 
     return {
-        baseUrl: baseUrl.replace(/\/$/, ""),
+        baseUrl: baseUrl.replace(/\/+$/, ""),
         apiKey,
     };
 }
@@ -102,14 +108,19 @@ export async function getSonarrSeriesByImdbId(
         );
     }
 
-    const series = (await response.json()) as SonarrSeries[];
+    const series =
+        (await response.json()) as SonarrSeries[];
 
     return (
-        series.find((item) => item.imdbId === imdbId) ?? null
+        series.find(
+            (item) => item.imdbId === imdbId
+        ) ?? null
     );
 }
 
-export async function getSonarrSeries(): Promise<SonarrSeries[]> {
+export async function getSonarrSeries(): Promise<
+    SonarrSeries[]
+> {
     const { baseUrl } = getConfig();
 
     const response = await sonarrFetch(
@@ -124,8 +135,6 @@ export async function getSonarrSeries(): Promise<SonarrSeries[]> {
 
     return (await response.json()) as SonarrSeries[];
 }
-
-
 
 export async function getSonarrEpisodes(
     seriesId: number
@@ -160,9 +169,10 @@ export async function getSonarrQueueForSeries(
         );
     }
 
-    const queue = (await response.json()) as {
-        records: SonarrQueueItem[];
-    };
+    const queue =
+        (await response.json()) as {
+            records: SonarrQueueItem[];
+        };
 
     return queue.records.filter(
         (item) => item.seriesId === seriesId
@@ -188,71 +198,130 @@ export async function getSonarrEpisodeFile(
 }
 
 export async function addSeriesToSonarr(
-  imdbId: string
+    imdbId: string
 ): Promise<SonarrSeries> {
-  const { baseUrl } = getConfig();
+    const { baseUrl } = getConfig();
 
-  // Look up the series in Sonarr
-  const lookupResponse = await sonarrFetch(
-    `${baseUrl}/api/v3/series/lookup?term=${encodeURIComponent(imdbId)}`
-  );
-
-  if (!lookupResponse.ok) {
-    throw new Error(
-      `Sonarr lookup error: ${lookupResponse.status} ${lookupResponse.statusText}`
+    /*
+     * ------------------------------------------------------------
+     * Look up the series in Sonarr.
+     * ------------------------------------------------------------
+     */
+    const lookupResponse = await sonarrFetch(
+        `${baseUrl}/api/v3/series/lookup?term=${encodeURIComponent(
+            imdbId
+        )}`
     );
-  }
 
-  const results = (await lookupResponse.json()) as SonarrSeries[];
-
-  const series = results.find(
-    (item) => item.imdbId === imdbId
-  );
-
-  if (!series) {
-    throw new Error(`Series not found in Sonarr lookup: ${imdbId}`);
-  }
-
-  // Never add a duplicate
-  const existing = await getSonarrSeriesByImdbId(imdbId);
-
-  if (existing) {
-    return existing;
-  }
-
-  // Add series to Sonarr
-  const response = await sonarrFetch(
-    `${baseUrl}/api/v3/series`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ...series,
-
-        rootFolderPath: "/tv",
-        qualityProfileId: Number(process.env.SONARR_QUALITY_PROFILE_ID),
-
-        monitored: true,
-        seasonFolder: true,
-
-        addOptions: {
-          monitor: "all",
-          searchForMissingEpisodes: true,
-          searchForCutoffUnmetEpisodes: false,
-        },
-      }),
+    if (!lookupResponse.ok) {
+        throw new Error(
+            `Sonarr lookup error: ${lookupResponse.status} ${lookupResponse.statusText}`
+        );
     }
-  );
 
-  if (!response.ok) {
-    const body = await response.text();
+    const results =
+        (await lookupResponse.json()) as SonarrSeries[];
 
-    throw new Error(
-      `Sonarr add series error: ${response.status} ${response.statusText} ${body}`
+    const series =
+        results.find(
+            (item) => item.imdbId === imdbId
+        );
+
+    if (!series) {
+        throw new Error(
+            `Series not found in Sonarr lookup: ${imdbId}`
+        );
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * Never add a duplicate.
+     * ------------------------------------------------------------
+     */
+    const existing =
+        await getSonarrSeriesByImdbId(imdbId);
+
+    if (existing) {
+        return existing;
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * Determine the Sonarr root folder.
+     *
+     * Sonarr's seriesType tells us whether this is an Anime
+     * series or a normal TV series.
+     *
+     * Anime:
+     *     /anime
+     *
+     * Standard:
+     *     /tv
+     * ------------------------------------------------------------
+     */
+    const anime =
+        await isAnime(imdbId);
+
+    const rootFolderPath =
+        anime
+            ? "/anime"
+            : "/tv";
+
+    console.log(
+        `Adding series to Sonarr: ${series.title} -> ${rootFolderPath} (Anime: ${anime})`
     );
-  }
 
-  return (await response.json()) as SonarrSeries;
+    /*
+     * ------------------------------------------------------------
+     * Add series to Sonarr.
+     * ------------------------------------------------------------
+     */
+    const response = await sonarrFetch(
+        `${baseUrl}/api/v3/series`,
+        {
+            method: "POST",
+
+            headers: {
+                "Content-Type":
+                    "application/json",
+            },
+
+            body: JSON.stringify({
+                ...series,
+
+                rootFolderPath,
+
+                qualityProfileId:
+                    Number(
+                        process.env
+                            .SONARR_QUALITY_PROFILE_ID
+                    ),
+
+                monitored: true,
+
+                seasonFolder: true,
+
+                addOptions: {
+                    monitor: "all",
+
+                    searchForMissingEpisodes:
+                        true,
+
+                    searchForCutoffUnmetEpisodes:
+                        false,
+                },
+            }),
+        }
+    );
+
+    if (!response.ok) {
+        const body =
+            await response.text();
+
+        throw new Error(
+            `Sonarr add series error: ${response.status} ${response.statusText} ${body}`
+        );
+    }
+
+    return (await response.json()) as SonarrSeries;
 }
